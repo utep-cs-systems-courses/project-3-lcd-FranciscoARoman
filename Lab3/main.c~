@@ -1,0 +1,273 @@
+
+#include <msp430.h>
+#include <libTimer.h>
+#include "lcdutils.h"
+#include "lcddraw.h"
+#include "buzzer.h"
+
+#include <stdlib.h>
+#include <stdio.h>
+#include <time.h>
+
+#define LED BIT6
+#define SW1 1
+#define SW2 2
+#define SW3 4
+#define SW4 8
+#define SWITCHES 15
+
+short redrawScreen = 1;
+int start = 1; // shows initialization / loading screen
+int lives = 3; // update to change graphics
+//int switches = 0;
+int buzzer = 0;
+int game = 0;
+int clear = 0;
+
+int inClock = 0; // game loops
+int loop = 1;
+
+void buzzer_init()
+{
+    timerAUpmode();		/* used to drive speaker */
+    P2SEL2 &= ~(BIT6 | BIT7);
+    P2SEL &= ~BIT7; 
+    P2SEL |= BIT6;
+    P2DIR = BIT6; /* enable output to speaker (P2.6) */
+
+}
+
+void buzzer_set_period(short cycles) /* buzzer clock = 2MHz. 5000 low-ish */
+{
+  CCR0 = cycles; 
+  CCR1 = cycles >> 1;		/* one half cycle */
+}
+
+
+static char 
+switch_update_interrupt_sense()
+{
+  char p2val = P2IN;
+  /* update switch interrupt to detect changes from current buttons */
+  P2IES |= (p2val & SWITCHES);	/* if switch up, sense down */
+  P2IES &= (p2val | ~SWITCHES);	/* if switch down, sense up */
+  return p2val;
+}
+
+void 
+switch_init()			/* setup switch */
+{  
+  P2REN |= SWITCHES;		/* enables resistors for switches */
+  P2IE |= SWITCHES;		/* enable interrupts from switches */
+  P2OUT |= SWITCHES;		/* pull-ups for switches */
+  P2DIR &= ~SWITCHES;		/* set switches' bits for input */
+  switch_update_interrupt_sense();
+}
+
+void
+switch_interrupt_handler()
+{
+  char p2val = switch_update_interrupt_sense();
+  switches = ~p2val & SWITCHES;
+
+}
+
+ 
+void updateScreen(){
+  //fillRectangle(40,60,x,x,COLOR_RED);
+  u_char width = screenWidth, height = screenHeight;
+  clearScreen(COLOR_GOLDENROD); // yellowish background
+  
+  // (init-col, init-row, end-col, end-row)) | Button area
+  fillRectangle(screenHeight,screenWidth,50,150,COLOR_BLACK);
+  fillRectangle(4,screenWidth+3,120,27,COLOR_BROWN); // brown background
+  fillRectangle(5,screenWidth+4,27,25,COLOR_RED); // red square
+  fillRectangle(35,screenWidth+4,27,25,COLOR_GREEN); // Green square
+  fillRectangle(65,screenWidth+4,27,25,COLOR_BLUE); // Blue square
+  fillRectangle(95,screenWidth+4,27,25,COLOR_YELLOW); // Yellow Square
+  
+  // Screen area + Color Names
+  fillRectangle(3,13,121,100,COLOR_BLACK); // screen window
+  fillRectangle(5,15,117,96,COLOR_TAN);
+  drawString5x7(8,117,"Red", COLOR_BLACK,COLOR_GOLDENROD);
+  drawString5x7(31,117,"Green",COLOR_BLACK,COLOR_GOLDENROD);
+  drawString5x7(64,117,"Blue",COLOR_BLACK,COLOR_GOLDENROD);
+  drawString5x7(90,117,"Yellow",COLOR_BLACK,COLOR_GOLDENROD);
+
+}
+
+void topScreen(){
+  if(lives == 3){
+    // Lives (init-col, init-row, end-col, end-row)
+    fillRectangle(5,4,4,7,COLOR_RED); // vertical
+    fillRectangle(3,6,8,3,COLOR_RED); // horizontal
+
+    fillRectangle(16,4,4,7,COLOR_RED); // vertical 2
+    fillRectangle(14,6,8,3,COLOR_RED); // horizontal 2
+
+    fillRectangle(27,4,4,7,COLOR_RED); // vertical 3
+    fillRectangle(25,6,8,3,COLOR_RED); // horizontal 3
+  }
+  else if(lives == 2){
+    // Lives (init-col, init-row, end-col, end-row)
+    fillRectangle(5,4,4,7,COLOR_RED); // vertical
+    fillRectangle(3,6,8,3,COLOR_RED); // horizontal
+
+    fillRectangle(16,4,4,7,COLOR_RED); // vertical 2
+    fillRectangle(14,6,8,3,COLOR_RED); // horizontal 2
+
+  }
+  else if(lives == 1){
+    // Lives (init-col, init-row, end-col, end-row)
+    fillRectangle(5,4,4,7,COLOR_RED); // vertical
+    fillRectangle(3,6,8,3,COLOR_RED); // horizontal
+  }
+  // Score + Loading Screen
+  drawString5x7(65,4,"Score:",COLOR_BLACK,COLOR_GOLDENROD);
+  drawString5x7(119,4,"0",COLOR_BLACK,COLOR_GOLDENROD);
+}
+
+void wdt_c_handler(){
+  
+  static int secCount = 0;
+  static int buzzCount = 0;
+
+  /*
+  if(start){
+    secCount++;
+  }
+  //secCount++;
+  // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Misc ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  // resets whole game
+  if(switches & SW1 && switches & SW4){
+    or_sr(0x18);
+    or_sr(0x10);
+    drawString5x7(43,80,"Restarting..",COLOR_BLACK,COLOR_TAN); // somehow fixed bug?
+  }
+  
+  if(lives == 0){
+    inClock++;
+    game = 0;
+    clear = 0;
+    drawString5x7(35,50,"GAME OVER", COLOR_BLACK,COLOR_TAN);
+    if(inClock >= 500){
+      or_sr(0x18);
+      or_sr(0x10); // kicks you out of game
+    }
+  }
+  
+  // turns off intro loading sequence
+  if(switches & SW4 && start) { // make sure it only works in the beginning 
+    start = 0; // off start screen
+    game = 1; // starts game
+    buzzer = 1; // audio true -> if buzzer
+    buzzer_set_period(5000);
+  } 
+  // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ GAME ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  // if audio playing from start button
+  if(buzzer){ // true audio
+    buzzCount++;
+    if(buzzCount > 30){
+      buzzer_set_period(3500); // raises pitch
+    }
+    if(buzzCount >= 100){      // ends noise
+      buzzer_set_period(0);
+      buzzer = 0; // off
+      clear = 1; // clear = finished sound
+    }
+  }
+
+  // if idle, loading sequence
+  if(start){
+    if(secCount > 200){
+      drawString5x7(43,60,"MSP-430",COLOR_BLACK,COLOR_TAN);
+    }
+    if(secCount >= 400){
+      drawString5x7(43,60,"MSP-430",COLOR_TAN,COLOR_TAN);
+      secCount = 0;
+    }
+    redrawScreen = 1;
+  }
+  
+  // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Game Colors ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  //inClock++;
+  if(game && clear && loop){
+    inClock++;
+    topScreen(); // updates lives / score
+    
+    if(inClock >= 300){ // timer on lives
+      lives -=1;
+      inClock = 0;
+      game = 0;
+      loop = 0;
+    }
+
+    if(switches & SW1 && game && inClock < 300 ){
+      lives -=1;
+      inClock = 0;
+      game = 0;
+      loop = 0;
+    }
+    
+    int num = 3;
+    int colNum;
+    char int_str[20];
+    sprintf(int_str, "%d", inClock);// int to string
+    
+    if(num == 0){
+      drawString5x7(35,30,"RED",COLOR_BLACK,COLOR_TAN);
+    }
+    else if(num == 1){
+      drawString5x7(35,40,"GREEN",COLOR_BLACK,COLOR_TAN);
+    }
+    else if(num == 2){
+      drawString5x7(35,70,"BLUE",COLOR_BLACK,COLOR_TAN);
+    }
+    else if(num == 3){
+      drawString5x7(35,60,"YELLOW",COLOR_BLACK,COLOR_TAN);
+      //game = 0;
+    }
+    drawString5x7(35,90,int_str,COLOR_BLACK, COLOR_TAN); // test var
+  }
+  
+  if(!game && clear && !loop){
+    game = 1;
+    loop = 1;
+    updateScreen();
+  }
+  */
+}
+
+void main(){
+  P1DIR |= LED;
+  P1OUT |= LED;
+  configureClocks();
+  lcd_init();
+  switch_init();
+  buzzer_init();
+ 
+  enableWDTInterrupts();
+  or_sr(0x8);
+
+  // set Screen - Graphics Prior to running any code 
+  updateScreen();
+  topScreen();
+  
+  while(1){
+    if(redrawScreen){
+      redrawScreen = 0;
+      //state_advance(); 
+    }
+    P1OUT &= ~LED;
+    or_sr(0x10);
+    P1OUT |= LED;
+  }
+}
+
+void
+__interrupt_vec(PORT2_VECTOR) Port_2(){
+  if (P2IFG & SWITCHES) {	      /* did a button cause this interrupt? */
+    P2IFG &= ~SWITCHES;		      /* clear pending sw interrupts */
+    switch_interrupt_handler();	/* single handler for all switches */
+  }
+}
